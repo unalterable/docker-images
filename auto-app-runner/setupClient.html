@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <title>Holding page</title>
+</head>
+
+<body>
+  <h1>Send POST Request</h1>
+  <form id="repoUrlForm" action="/submit-repo-url" method="POST">
+    <label for="repoUrl">RepoUrl:</label>
+    <input type="text" id="repoUrl" name="repoUrl">
+    <br><br>
+    <input type="submit" value="Submit">
+  </form>
+
+  <h1>Use existing</h1>
+  <form id="useExisting" action="/exit" method="POST">
+    <input type="submit" value="Submit">
+  </form>
+
+  <script>
+    document.getElementById('repoUrlForm').addEventListener('submit', function (event) {
+      event.preventDefault();
+      const repoUrl = document.getElementById('repoUrl').value;
+      fetch('/submit-repo-url', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: repoUrl })
+        .then(response => {
+          if (response.ok) console.log('POST request successful')
+          else console.error('Error:', response.statusText)
+        })
+        .catch(error => { console.error('Error:', error); });
+    });
+    document.getElementById('useExisting').addEventListener('submit', function (event) {
+      event.preventDefault();
+      const repoUrl = document.getElementById('repoUrl').value;
+      fetch('/exit', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: "" })
+        .then(response => {
+          if (response.ok) console.log('POST request successful')
+          else console.error('Error:', response.statusText)
+        })
+        .catch(error => { console.error('Error:', error); });
+    });
+  </script>
+</body>
+
+</html>
