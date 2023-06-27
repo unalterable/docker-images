@@ -31,9 +31,13 @@ while [ ! $EXIT_CODE -ne 0 ]; do
     #     find $REPO_DIR -type f -o -type d | grep -v -f <(if [ -f $RESET_IGNORE_FILE ]; then cat $RESET_IGNORE_FILE; fi) | xargs rm -rf
     # fi
 
-    # Checkout to HEAD
-    echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: Checkout to HEAD." | tee -a $LOG_FILE
-    git fetch --depth=1 && git checkout HEAD
+    # git fetch
+    echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: Git fetch." | tee -a $LOG_FILE
+    git fetch --depth=1
+
+    # Git reset to origin/main
+    echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: Git reset to origin/main." | tee -a $LOG_FILE
+    git reset --hard origin/main
 
     # Start the node process
     echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: Starting the process." | tee -a $LOG_FILE

@@ -40,7 +40,7 @@ const server = http.createServer((req, res) => {
       }
     });
   } else if (req.method === 'GET') {
-    fs.readFile('inputClient.html', (err, data) => {
+    fs.readFile('setupClient.html', (err, data) => {
       if (err) {
         console.error(err);
         res.statusCode = 500;
