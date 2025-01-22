@@ -24,16 +24,15 @@ http {
 
         # Log unauthorized access with detailed info
         error_page 401 = /unauthorized;
-        
+
         location = /unauthorized {
             access_log /var/log/nginx/unauthorized.log unauthorized_log;
             return 401;
         }
 
-        # Serve static content
+        # Proxy authenticated requests
         location / {
-            root /usr/share/nginx/html;
-            index index.html;
+            proxy_pass $UPSTREAM_HOST;
         }
     }
 }

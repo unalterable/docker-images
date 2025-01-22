@@ -1,19 +1,19 @@
-name: Build and Test Security Proxy
+name: Build, Test, Push Security Proxy
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'security-proxy/**' # Trigger only when changes are made in this folder
+      - 'security-proxy/**'
   pull_request:
     branches:
       - main
     paths:
-      - 'security-proxy/**' # Trigger for PRs only when changes are in this folder
+      - 'security-proxy/**'
 
 jobs:
-  build-and-test:
+  build-test-push:
     runs-on: ubuntu-latest
 
     steps:
@@ -25,55 +25,82 @@ jobs:
     - name: Set up Docker
       uses: docker/setup-buildx-action@v2
 
-    # Log in to Docker Hub (optional, if you want to push the image)
-    - name: Log in to Docker Hub
-      env:
-        DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-      run: |
-        echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
-
     # Build the Docker image
     - name: Build Docker image
       run: |
         cd security-proxy
         docker build -t security-proxy .
 
-    # Test the container (validate both services are running)
-    # - name: Test Docker container
-    #   run: |
-    #     # Navigate to the security-proxy folder
-    #     cd security-proxy
+    # Run the container with environment variables
+    - name: Run Docker container
+      run: |
+        cd security-proxy
+        docker run -d -p 443:443 -p 5000:5000 --name security-proxy \
+          -e ADMIN_API_KEY=test-key -e UPSTREAM_HOST=https://httpbin.org security-proxy
 
-    #     # Run the container
-    #     docker run -d -p 443:443 -p 5000:5000 --name security-proxy security-proxy
+        sleep 3
 
-    #     # Allow some time for services to start
-    #     sleep 10
+        docker logs security-proxy
 
-    #     # Add a user using the admin API
-    #     curl --fail -X POST -H "Content-Type: application/json" \
-    #       -d '{"username": "testuser", "password": "testpassword"}' \
-    #       http://localhost:5000/add_user || exit 1
+        echo "Running: curl --fail --verbose http://localhost:5000/"
+        curl --fail --verbose "http://localhost:5000/" || echo "Curl command failed for URL: $1"
 
-    #     # Test the proxy service (Basic auth)
-    #     curl -k --fail -u testuser:testpassword https://localhost || exit 1
+    # Test API endpoints using Bash
+    - name: Test API Endpoints
+      run: |
+        # Happy path: Add a user
+        curl --fail -X POST -H "x-api-key: test-key" -H "Content-Type: application/json" \
+          -d '{"username": "testuser", "password": "testpassword"}' -m 10 \
+          http://localhost:5000/add-user || (echo "Add user failed"; exit 1)
 
-    #     # Test the admin API to list users
-    #     curl --fail http://localhost:5000/list_users || exit 1
+        # Happy path: List users
+        curl --fail -X GET -H "x-api-key: test-key" -m 10 \
+          http://localhost:5000/list_users || (echo "List users failed"; exit 1)
 
-    # Clean up
-    # - name: Cleanup Docker
-    #   run: |
-    #     docker stop security-proxy
-    #     docker rm security-proxy
-    #     docker rmi security-proxy
+        # Fail path: Add a user without API key
+        curl -X POST -H "Content-Type: application/json" \
+          -d '{"username": "invalid", "password": "invalid"}' -m 10 \
+          http://localhost:5000/add-user && (echo "Unauthorized user creation did not fail"; exit 1) || echo "Unauthorized add user passed"
 
-    # Push the Docker image (optional, if you want to publish the image)
+        # Fail path: Invalid API key
+        curl -X GET -H "x-api-key: invalid-key" -m 10 \
+          http://localhost:5000/list_users && (echo "Invalid key did not fail"; exit 1) || echo "Invalid API key passed"
+
+        # Happy path: View unauthorized logs
+        curl --fail -X GET -H "x-api-key: test-key" -m 10 \
+          http://localhost:5000/unauthorized-logs || (echo "Unauthorized logs retrieval failed"; exit 1)
+
+        # Fail path: View unauthorized logs without API key
+        curl -X GET -m 10 http://localhost:5000/unauthorized-logs && (echo "Unauthorized logs retrieval did not fail"; exit 1) || echo "Unauthorized logs retrieval passed"
+
+        # # Happy path: View authorized logs
+        # curl --fail -X GET -H "x-api-key: test-key" -m 10 \
+        #   http://localhost:5000/authorized-logs || (echo "Authorized logs retrieval failed"; exit 1)
+
+        # # Fail path: View authorized logs without API key
+        # curl -X GET -m 10 http://localhost:5000/authorized-logs && (echo "Authorized logs retrieval did not fail"; exit 1) || echo "Authorized logs retrieval passed"
+
+    # Test NGINX Proxying
+    - name: Test NGINX Proxying
+      run: |
+        # Happy path: Proxy with valid credentials
+        curl --fail -k -u testuser:testpassword https://localhost/get || (echo "Proxying with valid credentials failed"; exit 1)
+
+        # Fail path: Proxy with invalid credentials
+        curl -k -u invalid:invalid https://localhost/get && (echo "Proxying with invalid credentials did not fail"; exit 1) || echo "Unauthorized proxying passed"
+
+    # Cleanup
+    - name: Cleanup Docker
+      run: |
+        docker stop security-proxy
+
     - name: Push Docker image
       env:
         DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
       run: |
+        echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
+        docker image ls -a
         docker tag security-proxy $DOCKER_USERNAME/security-proxy:latest
+        docker image ls -a
         docker push $DOCKER_USERNAME/security-proxy:latest
