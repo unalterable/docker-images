@@ -1,0 +1,79 @@
+name: Build and Test Security Proxy
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'security-proxy/**' # Trigger only when changes are made in this folder
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'security-proxy/**' # Trigger for PRs only when changes are in this folder
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+    # Checkout the code
+    - name: Checkout repository
+      uses: actions/checkout@v3
+
+    # Set up Docker
+    - name: Set up Docker
+      uses: docker/setup-buildx-action@v2
+
+    # Log in to Docker Hub (optional, if you want to push the image)
+    - name: Log in to Docker Hub
+      env:
+        DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      run: |
+        echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
+
+    # Build the Docker image
+    - name: Build Docker image
+      run: |
+        cd security-proxy
+        docker build -t security-proxy .
+
+    # Test the container (validate both services are running)
+    # - name: Test Docker container
+    #   run: |
+    #     # Navigate to the security-proxy folder
+    #     cd security-proxy
+
+    #     # Run the container
+    #     docker run -d -p 443:443 -p 5000:5000 --name security-proxy security-proxy
+
+    #     # Allow some time for services to start
+    #     sleep 10
+
+    #     # Add a user using the admin API
+    #     curl --fail -X POST -H "Content-Type: application/json" \
+    #       -d '{"username": "testuser", "password": "testpassword"}' \
+    #       http://localhost:5000/add_user || exit 1
+
+    #     # Test the proxy service (Basic auth)
+    #     curl -k --fail -u testuser:testpassword https://localhost || exit 1
+
+    #     # Test the admin API to list users
+    #     curl --fail http://localhost:5000/list_users || exit 1
+
+    # Clean up
+    # - name: Cleanup Docker
+    #   run: |
+    #     docker stop security-proxy
+    #     docker rm security-proxy
+    #     docker rmi security-proxy
+
+    # Push the Docker image (optional, if you want to publish the image)
+    - name: Push Docker image
+      env:
+        DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+      run: |
+        docker tag security-proxy $DOCKER_USERNAME/security-proxy:latest
+        docker push $DOCKER_USERNAME/security-proxy:latest
