@@ -24,4 +24,4 @@ COPY admin-api.py /admin-api/admin.py
 EXPOSE 443 5000
 
 # Start both Nginx and Flask API
-CMD sh -c "envsubst < /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && nginx && /admin-api/venv/bin/python /admin-api/admin.py"
+CMD sh -c 'sed "s|\$UPSTREAM_HOST|${UPSTREAM_HOST}|g" /etc/nginx/nginx.conf.template > /etc/nginx/nginx.conf && nginx && /admin-api/venv/bin/python /admin-api/admin.py'

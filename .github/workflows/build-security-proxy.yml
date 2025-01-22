@@ -100,7 +100,5 @@ jobs:
         DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
       run: |
         echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
-        docker image ls -a
         docker tag security-proxy $DOCKER_USERNAME/security-proxy:latest
-        docker image ls -a
         docker push $DOCKER_USERNAME/security-proxy:latest
