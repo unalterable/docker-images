@@ -1,5 +1,9 @@
 name: Build, Test, Push Security Proxy
 
+permissions:
+  contents: write    # This allows pushing tags
+  packages: write    # This allows pushing to GitHub Container Registry if needed
+
 on:
   push:
     branches:
@@ -17,9 +21,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    # Checkout the code
+    # Checkout the code with full history for tags
     - name: Checkout repository
       uses: actions/checkout@v3
+      with:
+        fetch-depth: 0
 
     # Set up Docker
     - name: Set up Docker
@@ -73,13 +79,6 @@ jobs:
         # Fail path: View unauthorized logs without API key
         curl -X GET -m 10 http://localhost:5000/unauthorized-logs && (echo "Unauthorized logs retrieval did not fail"; exit 1) || echo "Unauthorized logs retrieval passed"
 
-        # # Happy path: View authorized logs
-        # curl --fail -X GET -H "x-api-key: test-key" -m 10 \
-        #   http://localhost:5000/authorized-logs || (echo "Authorized logs retrieval failed"; exit 1)
-
-        # # Fail path: View authorized logs without API key
-        # curl -X GET -m 10 http://localhost:5000/authorized-logs && (echo "Authorized logs retrieval did not fail"; exit 1) || echo "Authorized logs retrieval passed"
-
     # Test NGINX Proxying
     - name: Test NGINX Proxying
       run: |
@@ -94,11 +93,44 @@ jobs:
       run: |
         docker stop security-proxy
 
-    - name: Push Docker image
+    # Get and increment version tag
+    - name: Get latest version and create new tag
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      id: tag_version
+      run: |
+        # Get the latest tag or start at 0.0.5 if none exists
+        git fetch --tags
+        LATEST_TAG=$(git tag -l "security-proxy-*" | sort -V | tail -n 1)
+        if [ -z "$LATEST_TAG" ]; then
+          NEW_TAG="security-proxy-0.0.5"
+        else
+          # Extract version numbers
+          VERSION_NUMBERS=$(echo $LATEST_TAG | sed 's/security-proxy-//')
+          # Increment patch version
+          NEW_VERSION=$(echo $VERSION_NUMBERS | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')
+          NEW_TAG="security-proxy-$NEW_VERSION"
+        fi
+        echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
+        echo "version=${NEW_TAG#security-proxy-}" >> $GITHUB_OUTPUT
+
+    # Create and push Git tag
+    - name: Create and push Git tag
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      run: |
+        git config user.name "${GITHUB_ACTOR}"
+        git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+        git tag -a ${{ steps.tag_version.outputs.new_tag }} -m "Release ${{ steps.tag_version.outputs.new_tag }}"
+        git push origin ${{ steps.tag_version.outputs.new_tag }}
+
+    # Push Docker images with tags
+    - name: Push Docker images
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
       env:
         DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
       run: |
         echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
         docker tag security-proxy $DOCKER_USERNAME/security-proxy:latest
+        docker tag security-proxy $DOCKER_USERNAME/security-proxy:${{ steps.tag_version.outputs.version }}
         docker push $DOCKER_USERNAME/security-proxy:latest
+        docker push $DOCKER_USERNAME/security-proxy:${{ steps.tag_version.outputs.version }}

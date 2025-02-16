@@ -79,18 +79,22 @@ def get_logs():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route('/authorized-logs', methods=['GET'])
-def authorized_logs():
+@app.route('/clear-unauthorized-logs', methods=['POST'])
+def clear_logs():
     auth_error = validate_api_key()
     if auth_error:
         return auth_error
 
+    log_file = '/var/log/nginx/unauthorized.log'
     try:
-        with open('/var/log/nginx/access.log', 'r') as f:
-            logs = f.read()
-        return jsonify({"logs": logs})
+        with open(log_file, 'w') as f:
+            f.write('')
+        return jsonify({ "message": "Unauthorized logs cleared successfully" })
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        return jsonify({
+            "error": f"Failed to clear logs: {str(e)}",
+            "details": "Ensure the server has write permissions for the log file"
+        }), 500
 
 
 if __name__ == '__main__':
