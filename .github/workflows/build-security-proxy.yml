@@ -111,11 +111,11 @@ jobs:
       if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.detect_folder_changes.outputs.changed == 'true'
       id: tag_version
       run: |
-        # Get the latest tag or start at 0.0.5 if none exists
+        # Get the latest tag or start at 0.0.1 if none exists
         git fetch --tags
         LATEST_TAG=$(git tag -l "${{ matrix.folder }}-*" | sort -V | tail -n 1)
         if [ -z "$LATEST_TAG" ]; then
-          NEW_TAG="${{ matrix.folder }}-0.0.5"
+          NEW_TAG="${{ matrix.folder }}-0.0.1"
         else
           # Extract version numbers
           VERSION_NUMBERS=$(echo $LATEST_TAG | sed 's/${{ matrix.folder }}-//')
