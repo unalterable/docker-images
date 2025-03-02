@@ -2,35 +2,41 @@
 
 WORKING_DIR=$(pwd)
 REPO_DIR=$WORKING_DIR/repository
-# RESET_REQUEST_FILE=$($WORKING_DIR)/repository/.REQUEST_RESET
-# RESET_IGNORE_FILE=$($WORKING_DIR)/repository/.RESET_IGNORE
 LOG_FILE=$WORKING_DIR/log.txt
 echo "Creating logfile: $LOG_FILE"
 touch $LOG_FILE
 
-while [ ! -d $REPO_DIR ]; do
-    # # Start a server in the background
-    # echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: Start a server in the background." | tee -a $LOG_FILE
-    # nc -l -p "$PORT" < "$LOG_FILE" &
-    # SERVER_PID=$!
-
+# Check if the repository exists by looking for .git directory
+# This handles the case where the directory exists (due to volume) but has no repo
+if [ ! -d "$REPO_DIR/.git" ]; then
+    echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: Repository not found or empty." | tee -a $LOG_FILE
+    
+    # Ensure the directory exists (it should with our volume, but just in case)
+    mkdir -p $REPO_DIR
+    
     echo "Starting setup server..." | tee -a $LOG_FILE
     node setupServer.js
 
     echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: Cloning the repo." | tee -a $LOG_FILE
     git clone --depth=1 --single-branch $(cat REPO_URL) $REPO_DIR
-done
+    
+    # If the clone was into a subdirectory (some repos do this), move everything up
+    if [ ! -d "$REPO_DIR/.git" ]; then
+        echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: Moving files from subdirectory." | tee -a $LOG_FILE
+        # Find the first directory that has .git
+        SUBDIRS=$(find $REPO_DIR -type d -name ".git" -exec dirname {} \; | head -n 1)
+        if [ ! -z "$SUBDIRS" ]; then
+            mv $SUBDIRS/* $REPO_DIR/
+            mv $SUBDIRS/.* $REPO_DIR/ 2>/dev/null || true
+            rmdir $SUBDIRS
+        fi
+    fi
+fi
 
 cd $REPO_DIR
 
 EXIT_CODE=0
-while [ ! $EXIT_CODE -ne 0 ]; do
-    # If requested, clear the directory
-    # if [ -f $RESET_IGNORE_FILE ]; then
-    #     echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: REQUEST_RESET file ($RESET_REQUEST_FILE) detected. Cleaning directory." | tee -a /app/log.txt
-    #     find $REPO_DIR -type f -o -type d | grep -v -f <(if [ -f $RESET_IGNORE_FILE ]; then cat $RESET_IGNORE_FILE; fi) | xargs rm -rf
-    # fi
-
+while [ $EXIT_CODE -eq 0 ]; do
     # git fetch
     echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: Git fetch." | tee -a $LOG_FILE
     git fetch --depth=1
@@ -43,13 +49,6 @@ while [ ! $EXIT_CODE -ne 0 ]; do
     echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: Starting the process." | tee -a $LOG_FILE
     PORT=8080 npm start
     EXIT_CODE=$? 
-
-    # Write time and exit code to file
-
-    # if [ $EXIT_CODE -ne 0 ]; then
-    #     echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: process ended with bad exit code: so exiting." | tee -a $LOG_FILE
-    #     break
-    # fi
 
     echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: process ended with exit code: $EXIT_CODE" | tee -a $LOG_FILE
 done
