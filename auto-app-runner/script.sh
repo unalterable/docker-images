@@ -10,10 +10,7 @@ touch $LOG_FILE
 # This handles the case where the directory exists (due to volume) but has no repo
 if [ ! -d "$REPO_DIR/.git" ]; then
     echo "Time: $(date +"%Y-%m-%d %H:%M:%S"), Event: Repository not found or empty." | tee -a $LOG_FILE
-    
-    # Ensure the directory exists (it should with our volume, but just in case)
-    mkdir -p $REPO_DIR
-    
+
     echo "Starting setup server..." | tee -a $LOG_FILE
     node setupServer.js
 
