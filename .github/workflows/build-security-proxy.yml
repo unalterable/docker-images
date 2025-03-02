@@ -1,4 +1,4 @@
-name: Build, Test, Push Security Proxy
+name: Generic Build, Test, Push Pipeline
 
 permissions:
   contents: write    # This allows pushing tags
@@ -8,114 +8,127 @@ on:
   push:
     branches:
       - main
-    paths:
+    paths-ignore:
       - 'security-proxy/**'
+      - '.github/workflows/security-proxy.yml'
+      - 'README.md'
+      - 'LICENSE'
+      - '.gitignore'
   pull_request:
     branches:
       - main
-    paths:
+    paths-ignore:
       - 'security-proxy/**'
+      - '.github/workflows/security-proxy.yml'
+      - 'README.md'
+      - 'LICENSE'
+      - '.gitignore'
 
 jobs:
-  build-test-push:
+  detect-changes:
     runs-on: ubuntu-latest
-
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
     steps:
-    # Checkout the code with full history for tags
-    - name: Checkout repository
+      - name: Checkout repository
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 1
+
+      - name: Detect changed folders
+        id: set-matrix
+        run: |
+          # Get all the modified folders from the commit
+          FOLDERS=$(find . -maxdepth 1 -type d -not -path "./.*" -not -path "." -not -path "./security-proxy" | sed 's|./||' | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "matrix=${FOLDERS}" >> $GITHUB_OUTPUT
+
+  build-test-push:
+    needs: detect-changes
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        folder: ${{ fromJson(needs.detect-changes.outputs.matrix) }}
+        
+    steps:
+    # Only proceed if changed files are in the current folder
+    - name: Check if folder has changes
+      id: check_changes
       uses: actions/checkout@v3
       with:
         fetch-depth: 0
+        
+    - name: Detect changes in folder
+      id: detect_folder_changes
+      run: |
+        if [ "${{ github.event_name }}" == "pull_request" ]; then
+          BASE_SHA=$(git merge-base ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }})
+          CHANGED=$(git diff --name-only $BASE_SHA ${{ github.event.pull_request.head.sha }} | grep -q "^${{ matrix.folder }}/" && echo "true" || echo "false")
+        else
+          BEFORE_SHA=$(git rev-list -n 1 HEAD^)
+          CHANGED=$(git diff --name-only $BEFORE_SHA HEAD | grep -q "^${{ matrix.folder }}/" && echo "true" || echo "false")
+        fi
+        echo "changed=${CHANGED}" >> $GITHUB_OUTPUT
+        
+    # Skip remaining steps if no changes in this folder
+    - name: Skip if no changes
+      if: steps.detect_folder_changes.outputs.changed != 'true'
+      run: echo "No changes detected in ${{ matrix.folder }}, skipping remaining steps"
 
     # Set up Docker
     - name: Set up Docker
+      if: steps.detect_folder_changes.outputs.changed == 'true'
       uses: docker/setup-buildx-action@v2
 
     # Build the Docker image
     - name: Build Docker image
+      if: steps.detect_folder_changes.outputs.changed == 'true'
       run: |
-        cd security-proxy
-        docker build -t security-proxy .
+        cd ${{ matrix.folder }}
+        docker build -t ${{ matrix.folder }} .
 
-    # Run the container with environment variables
-    - name: Run Docker container
+    # Check for folder-specific test script
+    - name: Check for test script
+      if: steps.detect_folder_changes.outputs.changed == 'true'
+      id: check_test_script
       run: |
-        cd security-proxy
-        docker run -d -p 443:443 -p 5000:5000 --name security-proxy \
-          -e ADMIN_API_KEY=test-key -e UPSTREAM_HOST=https://httpbin.org security-proxy
+        if [ -f "${{ matrix.folder }}/pipeline-tests.sh" ]; then
+          echo "has_test_script=true" >> $GITHUB_OUTPUT
+        else
+          echo "has_test_script=false" >> $GITHUB_OUTPUT
+          echo "Warning: No pipeline-tests.sh found in ${{ matrix.folder }}. Skipping tests."
+        fi
 
-        sleep 3
-
-        docker logs security-proxy
-
-        echo "Running: curl --fail --verbose http://localhost:5000/"
-        curl --fail --verbose "http://localhost:5000/" || echo "Curl command failed for URL: $1"
-
-    # Test API endpoints using Bash
-    - name: Test API Endpoints
+    # Run folder-specific test script if it exists
+    - name: Run test script
+      if: steps.detect_folder_changes.outputs.changed == 'true' && steps.check_test_script.outputs.has_test_script == 'true'
       run: |
-        # Happy path: Add a user
-        curl --fail -X POST -H "x-api-key: test-key" -H "Content-Type: application/json" \
-          -d '{"username": "testuser", "password": "testpassword"}' -m 10 \
-          http://localhost:5000/add-user || (echo "Add user failed"; exit 1)
-
-        # Happy path: List users
-        curl --fail -X GET -H "x-api-key: test-key" -m 10 \
-          http://localhost:5000/list_users || (echo "List users failed"; exit 1)
-
-        # Fail path: Add a user without API key
-        curl -X POST -H "Content-Type: application/json" \
-          -d '{"username": "invalid", "password": "invalid"}' -m 10 \
-          http://localhost:5000/add-user && (echo "Unauthorized user creation did not fail"; exit 1) || echo "Unauthorized add user passed"
-
-        # Fail path: Invalid API key
-        curl -X GET -H "x-api-key: invalid-key" -m 10 \
-          http://localhost:5000/list_users && (echo "Invalid key did not fail"; exit 1) || echo "Invalid API key passed"
-
-        # Happy path: View unauthorized logs
-        curl --fail -X GET -H "x-api-key: test-key" -m 10 \
-          http://localhost:5000/unauthorized-logs || (echo "Unauthorized logs retrieval failed"; exit 1)
-
-        # Fail path: View unauthorized logs without API key
-        curl -X GET -m 10 http://localhost:5000/unauthorized-logs && (echo "Unauthorized logs retrieval did not fail"; exit 1) || echo "Unauthorized logs retrieval passed"
-
-    # Test NGINX Proxying
-    - name: Test NGINX Proxying
-      run: |
-        # Happy path: Proxy with valid credentials
-        curl --fail -k -u testuser:testpassword https://localhost/get || (echo "Proxying with valid credentials failed"; exit 1)
-
-        # Fail path: Proxy with invalid credentials
-        curl -k -u invalid:invalid https://localhost/get && (echo "Proxying with invalid credentials did not fail"; exit 1) || echo "Unauthorized proxying passed"
-
-    # Cleanup
-    - name: Cleanup Docker
-      run: |
-        docker stop security-proxy
+        chmod +x ${{ matrix.folder }}/pipeline-tests.sh
+        cd ${{ matrix.folder }}
+        ./pipeline-tests.sh
 
     # Get and increment version tag
     - name: Get latest version and create new tag
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.detect_folder_changes.outputs.changed == 'true'
       id: tag_version
       run: |
         # Get the latest tag or start at 0.0.5 if none exists
         git fetch --tags
-        LATEST_TAG=$(git tag -l "security-proxy-*" | sort -V | tail -n 1)
+        LATEST_TAG=$(git tag -l "${{ matrix.folder }}-*" | sort -V | tail -n 1)
         if [ -z "$LATEST_TAG" ]; then
-          NEW_TAG="security-proxy-0.0.5"
+          NEW_TAG="${{ matrix.folder }}-0.0.5"
         else
           # Extract version numbers
-          VERSION_NUMBERS=$(echo $LATEST_TAG | sed 's/security-proxy-//')
+          VERSION_NUMBERS=$(echo $LATEST_TAG | sed 's/${{ matrix.folder }}-//')
           # Increment patch version
           NEW_VERSION=$(echo $VERSION_NUMBERS | awk -F. '{$NF = $NF + 1;} 1' | sed 's/ /./g')
-          NEW_TAG="security-proxy-$NEW_VERSION"
+          NEW_TAG="${{ matrix.folder }}-$NEW_VERSION"
         fi
         echo "new_tag=$NEW_TAG" >> $GITHUB_OUTPUT
-        echo "version=${NEW_TAG#security-proxy-}" >> $GITHUB_OUTPUT
+        echo "version=${NEW_TAG#${{ matrix.folder }}-}" >> $GITHUB_OUTPUT
 
     # Create and push Git tag
     - name: Create and push Git tag
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.detect_folder_changes.outputs.changed == 'true'
       run: |
         git config user.name "${GITHUB_ACTOR}"
         git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
@@ -124,13 +137,13 @@ jobs:
 
     # Push Docker images with tags
     - name: Push Docker images
-      if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+      if: github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.detect_folder_changes.outputs.changed == 'true'
       env:
         DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
         DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
       run: |
         echo "${DOCKER_PASSWORD}" | docker login -u "${DOCKER_USERNAME}" --password-stdin
-        docker tag security-proxy $DOCKER_USERNAME/security-proxy:latest
-        docker tag security-proxy $DOCKER_USERNAME/security-proxy:${{ steps.tag_version.outputs.version }}
-        docker push $DOCKER_USERNAME/security-proxy:latest
-        docker push $DOCKER_USERNAME/security-proxy:${{ steps.tag_version.outputs.version }}
+        docker tag ${{ matrix.folder }} $DOCKER_USERNAME/${{ matrix.folder }}:latest
+        docker tag ${{ matrix.folder }} $DOCKER_USERNAME/${{ matrix.folder }}:${{ steps.tag_version.outputs.version }}
+        docker push $DOCKER_USERNAME/${{ matrix.folder }}:latest
+        docker push $DOCKER_USERNAME/${{ matrix.folder }}:${{ steps.tag_version.outputs.version }}
