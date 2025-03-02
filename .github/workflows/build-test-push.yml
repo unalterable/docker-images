@@ -1,4 +1,4 @@
-name: Generic Build, Test, Push Pipeline
+name: Build, Test, Push Pipeline
 
 permissions:
   contents: write    # This allows pushing tags
@@ -9,8 +9,6 @@ on:
     branches:
       - main
     paths-ignore:
-      - 'security-proxy/**'
-      - '.github/workflows/security-proxy.yml'
       - 'README.md'
       - 'LICENSE'
       - '.gitignore'
@@ -18,8 +16,6 @@ on:
     branches:
       - main
     paths-ignore:
-      - 'security-proxy/**'
-      - '.github/workflows/security-proxy.yml'
       - 'README.md'
       - 'LICENSE'
       - '.gitignore'
