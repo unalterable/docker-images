@@ -96,6 +96,30 @@ def clear_logs():
             "details": "Ensure the server has write permissions for the log file"
         }), 500
 
+@app.route('/update-tls-certificate', methods=['POST'])
+def update_tls_certificate():
+    auth_error = validate_api_key()
+    if auth_error:
+        return auth_error
+
+    if not request.files or 'cert' not in request.files or 'key' not in request.files:
+        return jsonify({"error": "Certificate and key files are required"}), 400
+    
+    cert_file = request.files['cert']
+    key_file = request.files['key']
+    
+    try:
+        # Save the certificate and key files
+        cert_file.save('/etc/nginx/certs/server.crt')
+        key_file.save('/etc/nginx/certs/server.key')
+        
+        # Reload Nginx to apply the new certificate
+        subprocess.run(["nginx", "-s", "reload"], check=True)
+        
+        return jsonify({"message": "TLS certificate updated successfully and Nginx reloaded"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5000)
