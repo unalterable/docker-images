@@ -7,22 +7,50 @@ events {
 http {
     log_format main '[$time_local] "$remote_addr" "$remote_user" "$request" "$status" "$body_bytes_sent" "$http_referer" "$http_user_agent" "$http_x_forwarded_for"';
     log_format unauthorized_log '[$time_local] "$remote_addr" "$remote_user" "$request" "$status" "$body_bytes_sent" "$http_referer" "$http_user_agent" "$http_x_forwarded_for"';
-    access_log /var/log/nginx/access.log main;
-    error_log /var/log/nginx/error.log;
+    access_log /var/log/openresty/access.log main;
+    error_log /var/log/openresty/error.log;
+
+    # Rate limiting for login attempts
+    limit_req_zone $binary_remote_addr zone=login_limit:10m rate=5r/m;
+
+    # Map for WebSocket upgrade
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        '' close;
+    }
+
+    # Check if request has Basic Auth header
+    map $http_authorization $has_basic_auth {
+        default 0;
+        "~^Basic " 1;
+    }
+
+    # Lua shared dict for session secret
+    lua_shared_dict session_config 1m;
+
+    # Initialize session secret on startup
+    init_by_lua_block {
+        local secret = os.getenv("SESSION_SECRET") or "$SESSION_SECRET"
+        if secret == "" or secret == "$SESSION_SECRET" then
+            -- Generate random secret if not provided (not ideal for multi-worker, but works for single worker)
+            local resty_random = require "resty.random"
+            secret = ngx.encode_base64(resty_random.bytes(32))
+        end
+        ngx.shared.session_config:set("secret", secret)
+        ngx.shared.session_config:set("max_age", 86400)  -- 24 hours
+    }
 
     # HTTP server block
     server {
         listen 80;
         server_name localhost;
 
-        # Let's Encrypt ACME challenge
         location /.well-known/acme-challenge/ {
-            access_log /var/log/nginx/unauthorized.log unauthorized_log;
+            access_log /var/log/openresty/unauthorized.log unauthorized_log;
             root /var/www;
             try_files $uri =404;
         }
 
-        # Redirect all other HTTP requests to HTTPS
         location / {
             return 301 https://$host$request_uri;
         }
@@ -33,49 +61,251 @@ http {
         listen 443 ssl;
         server_name localhost;
 
-        # TLS configuration
         ssl_certificate /etc/nginx/certs/server.crt;
         ssl_certificate_key /etc/nginx/certs/server.key;
-
-        # Improve SSL configuration
         ssl_protocols TLSv1.2 TLSv1.3;
         ssl_prefer_server_ciphers on;
         ssl_ciphers ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305:DHE-RSA-AES128-GCM-SHA256:DHE-RSA-AES256-GCM-SHA384;
         ssl_session_cache shared:SSL:10m;
         ssl_session_timeout 10m;
         ssl_session_tickets off;
-
-        # Add HSTS header for better security
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-        # Basic authentication
-        auth_basic "Restricted Content";
-        auth_basic_user_file /etc/nginx/.htpasswd;
-
-        # Allow Let's Encrypt HTTP challenge verification without authentication
+        # Let's Encrypt - no auth
         location /.well-known/acme-challenge/ {
             auth_basic off;
             allow all;
             root /var/www;
-            access_log /var/log/nginx/unauthorized.log unauthorized_log;
+            access_log /var/log/openresty/unauthorized.log unauthorized_log;
             try_files $uri =404;
         }
 
-        # Log unauthorized access with detailed info
-        error_page 401 = /unauthorized;
-
-        location = /unauthorized {
-            access_log /var/log/nginx/unauthorized.log unauthorized_log;
-            return 401;
+        # =====================================================
+        # LOGIN PAGE - Served inline
+        # =====================================================
+        location = /proxy-login {
+            default_type text/html;
+            content_by_lua_block {
+                ngx.say([[<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Login Required</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: linear-gradient(135deg, #1a1a2e 0%, #16213e 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+        .login-container { background: rgba(255,255,255,0.95); padding: 40px; border-radius: 16px; box-shadow: 0 20px 60px rgba(0,0,0,0.3); width: 100%; max-width: 400px; }
+        h1 { color: #1a1a2e; margin-bottom: 8px; font-size: 24px; }
+        .subtitle { color: #666; margin-bottom: 30px; font-size: 14px; }
+        .form-group { margin-bottom: 20px; }
+        label { display: block; margin-bottom: 6px; color: #333; font-weight: 500; font-size: 14px; }
+        input[type="text"], input[type="password"] { width: 100%; padding: 12px 16px; border: 2px solid #e0e0e0; border-radius: 8px; font-size: 16px; transition: border-color 0.2s, box-shadow 0.2s; }
+        input:focus { outline: none; border-color: #4a90d9; box-shadow: 0 0 0 3px rgba(74,144,217,0.1); }
+        button { width: 100%; padding: 14px; background: linear-gradient(135deg, #4a90d9 0%, #357abd 100%); color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.1s, box-shadow 0.2s; }
+        button:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(74,144,217,0.4); }
+        button:active { transform: translateY(0); }
+        .error { background: #fee; color: #c00; padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; display: none; }
+        .error.show { display: block; }
+        .info { margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #888; }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <h1>Authentication Required</h1>
+        <p class="subtitle">Please enter your credentials to continue</p>
+        <div class="error" id="error">Invalid username or password</div>
+        <form id="loginForm">
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" name="username" required autocomplete="username" autofocus>
+            </div>
+            <div class="form-group">
+                <label for="password">Password</label>
+                <input type="password" id="password" name="password" required autocomplete="current-password">
+            </div>
+            <button type="submit">Sign In</button>
+        </form>
+        <div class="info">Direct links with credentials also supported</div>
+    </div>
+    <script>
+        const params = new URLSearchParams(window.location.search);
+        const redirect = params.get("redirect") || "/";
+        if (params.get("error") === "1") document.getElementById("error").classList.add("show");
+        document.getElementById("loginForm").addEventListener("submit", async (e) => {
+            e.preventDefault();
+            const username = document.getElementById("username").value;
+            const password = document.getElementById("password").value;
+            try {
+                const response = await fetch("/proxy-auth", {
+                    method: "POST",
+                    headers: { "Authorization": "Basic " + btoa(username + ":" + password) }
+                });
+                if (response.ok) window.location.href = redirect;
+                else { document.getElementById("error").classList.add("show"); document.getElementById("password").value = ""; }
+            } catch (err) { document.getElementById("error").textContent = "Connection error"; document.getElementById("error").classList.add("show"); }
+        });
+    </script>
+</body>
+</html>]])
+            }
         }
 
-        # Proxy authenticated requests
+        # =====================================================
+        # AUTH ENDPOINT - Validates credentials, sets signed cookie
+        # =====================================================
+        location = /proxy-auth {
+            limit_req zone=login_limit burst=3 nodelay;
+            limit_req_status 429;
+
+            # Validate against .htpasswd
+            auth_basic "Login";
+            auth_basic_user_file /etc/nginx/.htpasswd;
+
+            # If we get here, Basic Auth succeeded - create signed cookie
+            content_by_lua_block {
+                local resty_sha256 = require "resty.sha256"
+                local str = require "resty.string"
+                
+                local secret = ngx.shared.session_config:get("secret")
+                local max_age = ngx.shared.session_config:get("max_age")
+                local username = ngx.var.remote_user
+                local timestamp = ngx.now()
+                
+                -- Create signature: HMAC-SHA256(username:timestamp, secret)
+                local data = username .. ":" .. timestamp
+                local sha256 = resty_sha256:new()
+                sha256:update(secret .. data)
+                local signature = str.to_hex(sha256:final())
+                
+                -- Cookie value: username:timestamp:signature
+                local cookie_value = username .. ":" .. timestamp .. ":" .. signature
+                
+                -- Set secure cookie
+                ngx.header["Set-Cookie"] = "proxy_session=" .. cookie_value .. "; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=" .. max_age
+                ngx.header["Cache-Control"] = "no-store"
+                ngx.say("OK")
+            }
+        }
+
+        # =====================================================
+        # LOGOUT ENDPOINT
+        # =====================================================
+        location = /proxy-logout {
+            content_by_lua_block {
+                ngx.header["Set-Cookie"] = "proxy_session=deleted; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
+                ngx.header["Cache-Control"] = "no-store"
+                ngx.redirect("/proxy-login", ngx.HTTP_MOVED_TEMPORARILY)
+            }
+        }
+
+        # =====================================================
+        # SESSION VALIDATION (internal)
+        # =====================================================
+        location = /proxy-check-session {
+            internal;
+            content_by_lua_block {
+                local cookie = ngx.var.cookie_proxy_session
+                if not cookie or cookie == "" then
+                    ngx.exit(ngx.HTTP_UNAUTHORIZED)
+                    return
+                end
+                
+                -- Parse cookie: username:timestamp:signature
+                local username, timestamp, signature = cookie:match("^([^:]+):([^:]+):([^:]+)$")
+                if not username or not timestamp or not signature then
+                    ngx.exit(ngx.HTTP_UNAUTHORIZED)
+                    return
+                end
+                
+                -- Verify signature
+                local resty_sha256 = require "resty.sha256"
+                local str = require "resty.string"
+                local secret = ngx.shared.session_config:get("secret")
+                
+                local data = username .. ":" .. timestamp
+                local sha256 = resty_sha256:new()
+                sha256:update(secret .. data)
+                local expected_signature = str.to_hex(sha256:final())
+                
+                if signature ~= expected_signature then
+                    ngx.log(ngx.WARN, "Invalid session signature for user: ", username)
+                    ngx.exit(ngx.HTTP_UNAUTHORIZED)
+                    return
+                end
+                
+                -- Check expiry
+                local max_age = ngx.shared.session_config:get("max_age")
+                local session_age = ngx.now() - tonumber(timestamp)
+                if session_age > max_age then
+                    ngx.log(ngx.INFO, "Expired session for user: ", username)
+                    ngx.exit(ngx.HTTP_UNAUTHORIZED)
+                    return
+                end
+                
+                -- Valid session - set header for downstream
+                ngx.req.set_header("X-Proxy-User", username)
+                ngx.exit(ngx.HTTP_OK)
+            }
+        }
+
+        # =====================================================
+        # MAIN PROXY - Cookie OR Basic Auth
+        # =====================================================
         location / {
+            # Try cookie auth first
+            auth_request /proxy-check-session;
+            auth_request_set $session_user $upstream_http_x_proxy_user;
+            
+            # If cookie auth fails, try basic auth or redirect
+            error_page 401 = @try_basic_auth;
+
+            # Proxy settings
             proxy_pass $UPSTREAM_HOST;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Proxy-User $session_user;
+
+            # WebSocket support
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_read_timeout 86400s;
+            proxy_send_timeout 86400s;
+            proxy_buffering off;
+        }
+
+        # =====================================================
+        # BASIC AUTH FALLBACK
+        # =====================================================
+        location @try_basic_auth {
+            # Check if Basic Auth header is present
+            if ($has_basic_auth = 0) {
+                # No Basic Auth header - redirect to login
+                return 303 /proxy-login?redirect=$request_uri;
+            }
+
+            # Has Basic Auth header - validate against htpasswd
+            auth_basic "Restricted";
+            auth_basic_user_file /etc/nginx/.htpasswd;
+
+            # If we get here, Basic Auth succeeded
+            proxy_pass $UPSTREAM_HOST;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Proxy-User $remote_user;
+
+            # WebSocket support
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
+            proxy_read_timeout 86400s;
+            proxy_send_timeout 86400s;
+            proxy_buffering off;
         }
     }
 }

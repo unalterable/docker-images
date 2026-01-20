@@ -71,7 +71,7 @@ def get_logs():
         return auth_error
 
     try:
-        with open('/var/log/nginx/unauthorized.log', 'r') as f:
+        with open('/var/log/openresty/unauthorized.log', 'r') as f:
             logs = f.read()
         return jsonify({"logs": logs})
     except Exception as e:
@@ -83,7 +83,7 @@ def clear_logs():
     if auth_error:
         return auth_error
 
-    log_file = '/var/log/nginx/unauthorized.log'
+    log_file = '/var/log/openresty/unauthorized.log'
     try:
         with open(log_file, 'w') as f:
             f.write('')
@@ -115,8 +115,8 @@ def update_tls_certificate():
         with open('/etc/nginx/certs/server.key', 'w') as f:
             f.write(private_key)
 
-        # Reload Nginx to apply the new certificate
-        subprocess.run(["nginx", "-s", "reload"], check=True)
+        # Reload OpenResty to apply the new certificate
+        subprocess.run(["/usr/local/openresty/nginx/sbin/nginx", "-s", "reload"], check=True)
 
         return jsonify({"message": "TLS certificate updated successfully"})
     except Exception as e:
