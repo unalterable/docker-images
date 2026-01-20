@@ -51,6 +51,27 @@ curl --fail -X GET -H "x-api-key: test-key" -m 10 \
 echo "Test: View unauthorized logs without API key (should fail)"
 curl -X GET -m 10 http://localhost:5000/unauthorized-logs && (echo "Unauthorized logs retrieval did not fail"; exit 1) || echo "Unauthorized logs retrieval passed"
 
+# Happy path: Clear unauthorized logs
+echo "Test: Clear unauthorized logs"
+curl --fail -X POST -H "x-api-key: test-key" -m 10 \
+  http://localhost:5000/clear-unauthorized-logs || (echo "Clear unauthorized logs failed"; exit 1)
+
+# Happy path: Refresh session secret
+echo "Test: Refresh session secret"
+curl --fail -X POST -H "x-api-key: test-key" -m 10 \
+  http://localhost:5000/refresh-session-secret || (echo "Refresh session secret failed"; exit 1)
+
+# Happy path: Delete a user
+echo "Test: Delete user"
+curl --fail -X DELETE -H "x-api-key: test-key" -m 10 \
+  http://localhost:5000/delete_user/testuser || (echo "Delete user failed"; exit 1)
+
+# Re-add the user for proxy tests
+echo "Test: Re-add user for proxy tests"
+curl --fail -X POST -H "x-api-key: test-key" -H "Content-Type: application/json" \
+  -d '{"username": "testuser", "password": "testpassword"}' -m 10 \
+  http://localhost:5000/add-user || (echo "Re-add user failed"; exit 1)
+
 # Test NGINX Proxying
 echo "Testing NGINX Proxying..."
 

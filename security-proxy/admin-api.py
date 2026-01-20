@@ -1,12 +1,14 @@
 from flask import Flask, request, jsonify, send_from_directory
 import subprocess
 import os
+import base64
 
 app = Flask(__name__)
 
 HTPASSWD_FILE = "/etc/nginx/.htpasswd"
 API_KEY = os.getenv("ADMIN_API_KEY", "default_api_key")  # Load API key from environment or use a default
 ACME_CHALLENGE_DIR = "/var/www/.well-known/acme-challenge"
+SECRETS_DIR = "/etc/nginx/secrets"
 
 def validate_api_key():
     api_key = request.headers.get("x-api-key")
@@ -171,6 +173,36 @@ def cleanup_acme_challenges():
             })
         else:
             return jsonify({"message": "ACME challenge directory does not exist", "count": 0})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/refresh-session-secret', methods=['POST'])
+def refresh_session_secret():
+    """Generate a new session secret and write it to file"""
+    auth_error = validate_api_key()
+    if auth_error:
+        return auth_error
+
+    try:
+        # Generate new secret
+        new_secret = base64.b64encode(os.urandom(32)).decode('utf-8')
+        
+        # Write to file
+        os.makedirs(SECRETS_DIR, exist_ok=True)
+        secret_file = os.path.join(SECRETS_DIR, 'session_secret')
+        
+        with open(secret_file, 'w') as f:
+            f.write(new_secret)
+        
+        # Set proper permissions
+        os.chmod(secret_file, 0o600)
+        
+        return jsonify({
+            "message": "Session secret refreshed successfully",
+            "all_sessions_invalidated": True,
+            "note": "OpenResty will read the new secret on next request"
+        }), 200
+        
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
