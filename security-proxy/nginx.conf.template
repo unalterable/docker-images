@@ -121,11 +121,40 @@ http {
         location = /proxy-auth {
             limit_req zone=login_limit burst=3 nodelay;
             limit_req_status 429;
-            auth_basic "Login";
-            auth_basic_user_file /etc/nginx/.htpasswd;
 
             content_by_lua_block {
-                local username = ngx.var.remote_user
+                -- Validate Basic Auth header
+                local auth_header = ngx.var.http_authorization
+                if not auth_header or not auth_header:match("^Basic%s+") then
+                    ngx.status = ngx.HTTP_UNAUTHORIZED
+                    ngx.header["Content-Type"] = "application/json"
+                    ngx.say('{"error":"Missing or invalid Authorization header"}')
+                    return
+                end
+                
+                -- Validate credentials using internal location
+                local res = ngx.location.capture("/internal-validate-basic-auth", {
+                    method = ngx.HTTP_GET,
+                    copy_all_vars = true
+                })
+                
+                if res.status ~= ngx.HTTP_OK then
+                    ngx.status = ngx.HTTP_UNAUTHORIZED
+                    ngx.header["Content-Type"] = "application/json"
+                    ngx.say('{"error":"Invalid credentials"}')
+                    return
+                end
+                
+                -- Extract username from validation response
+                local cjson = require "cjson"
+                local ok, data = pcall(cjson.decode, res.body)
+                if not ok or not data.username then
+                    ngx.status = ngx.HTTP_INTERNAL_SERVER_ERROR
+                    ngx.say('{"error":"Failed to parse username"}')
+                    return
+                end
+                
+                local username = data.username
                 local timestamp = ngx.now()
                 local password_hash = read_user_hash(username)
                 
@@ -148,7 +177,6 @@ http {
                 ngx.header["Cache-Control"] = "no-store"
                 ngx.header["Content-Type"] = "application/json"
                 
-                local cjson = require "cjson"
                 ngx.say(cjson.encode({refresh_token = refresh_value}))
             }
         }

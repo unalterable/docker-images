@@ -17,6 +17,7 @@
         button { width: 100%; padding: 14px; background: linear-gradient(135deg, #4a90d9 0%, #357abd 100%); color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: 600; cursor: pointer; transition: transform 0.1s, box-shadow 0.2s; }
         button:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(74,144,217,0.4); }
         button:active { transform: translateY(0); }
+        button:disabled { opacity: 0.6; cursor: not-allowed; transform: none; }
         .error { background: #fee; color: #c00; padding: 12px; border-radius: 8px; margin-bottom: 20px; font-size: 14px; display: none; }
         .error.show { display: block; }
         .info { margin-top: 20px; padding-top: 20px; border-top: 1px solid #eee; font-size: 12px; color: #888; }
@@ -37,7 +38,7 @@
                 <label for="password">Password</label>
                 <input type="password" id="password" name="password" required autocomplete="current-password">
             </div>
-            <button type="submit">Sign In</button>
+            <button type="submit" id="submitBtn">Sign In</button>
         </form>
         <div class="info">Direct links with credentials also supported</div>
     </div>
@@ -46,6 +47,7 @@
         const redirect = params.get("redirect") || "/";
         const refreshToken = localStorage.getItem('refresh_token');
         
+        // Try to use refresh token if available
         if (refreshToken) {
             document.getElementById('loginContainer').innerHTML = '<div class="loading">Refreshing session...</div>';
             
@@ -56,31 +58,49 @@
             })
             .then(response => {
                 if (response.ok) {
+                    // Refresh successful, redirect
                     window.location.href = redirect;
                 } else {
+                    // Refresh failed, clear token and show login form
+                    console.log('Refresh token invalid or expired');
                     localStorage.removeItem('refresh_token');
                     location.reload();
                 }
             })
             .catch(err => {
+                // Network error or other issue, clear token and show login form
+                console.error('Refresh error:', err);
                 localStorage.removeItem('refresh_token');
                 location.reload();
             });
         } else {
+            // No refresh token, show any error message from URL
             if (params.get("error") === "1") {
                 document.getElementById("error").classList.add("show");
             }
         }
         
+        // Handle login form submission
         document.getElementById("loginForm").addEventListener("submit", async (e) => {
             e.preventDefault();
+            
+            const submitBtn = document.getElementById("submitBtn");
+            const errorDiv = document.getElementById("error");
             const username = document.getElementById("username").value;
             const password = document.getElementById("password").value;
+            
+            // Disable form during submission
+            submitBtn.disabled = true;
+            submitBtn.textContent = "Signing in...";
+            errorDiv.classList.remove("show");
             
             try {
                 const response = await fetch("/proxy-auth", {
                     method: "POST",
-                    headers: { "Authorization": "Basic " + btoa(username + ":" + password) }
+                    headers: { 
+                        "Authorization": "Basic " + btoa(username + ":" + password),
+                        "Content-Type": "application/json"
+                    }
                 });
                 
                 if (response.ok) {
@@ -88,14 +108,24 @@
                     if (data.refresh_token) {
                         localStorage.setItem('refresh_token', data.refresh_token);
                     }
+                    // Redirect to original destination
                     window.location.href = redirect;
                 } else {
-                    document.getElementById("error").classList.add("show");
+                    // Login failed
+                    errorDiv.textContent = "Invalid username or password";
+                    errorDiv.classList.add("show");
                     document.getElementById("password").value = "";
+                    document.getElementById("password").focus();
                 }
             } catch (err) {
-                document.getElementById("error").textContent = "Connection error";
-                document.getElementById("error").classList.add("show");
+                // Network or other error
+                console.error('Login error:', err);
+                errorDiv.textContent = "Connection error. Please try again.";
+                errorDiv.classList.add("show");
+            } finally {
+                // Re-enable form
+                submitBtn.disabled = false;
+                submitBtn.textContent = "Sign In";
             }
         });
     </script>
