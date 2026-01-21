@@ -24,7 +24,6 @@ http {
     }
 
     init_by_lua_block {
-        -- Shared utility functions
         function read_secret_file(path)
             local file = io.open(path, "r")
             if not file then return nil end
@@ -68,7 +67,6 @@ http {
             ngx.header["Set-Cookie"] = "proxy_session=; Path=/; HttpOnly; Secure; SameSite=Strict; Max-Age=0"
         end
         
-        -- Constants
         _G.read_secret_file = read_secret_file
         _G.secure_compare = secure_compare
         _G.compute_signature = compute_signature
@@ -78,7 +76,6 @@ http {
         _G.REFRESH_MAX_AGE = 604800
     }
 
-    # HTTP -> HTTPS redirect
     server {
         listen 80;
         server_name localhost;
@@ -94,7 +91,6 @@ http {
         }
     }
 
-    # HTTPS Server
     server {
         listen 443 ssl;
         server_name localhost;
@@ -109,7 +105,6 @@ http {
         ssl_session_tickets off;
         add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
 
-        # Let's Encrypt
         location /.well-known/acme-challenge/ {
             auth_basic off;
             root /var/www;
@@ -117,14 +112,12 @@ http {
             try_files $uri =404;
         }
 
-        # Login page
         location = /proxy-login {
             access_log /var/log/openresty/unauthorized.log unauthorized_log;
             default_type text/html;
             alias /etc/nginx/html/login.html;
         }
 
-        # Login endpoint
         location = /proxy-auth {
             limit_req zone=login_limit burst=3 nodelay;
             limit_req_status 429;
@@ -145,11 +138,9 @@ http {
                 local session_secret = read_secret_file("/etc/nginx/secrets/session_secret")
                 local refresh_secret = read_secret_file("/etc/nginx/secrets/refresh_secret")
                 
-                -- Create session cookie
                 local session_sig = compute_signature(session_secret, username .. ":" .. timestamp)
                 local session_value = username .. ":" .. timestamp .. ":" .. session_sig
                 
-                -- Create refresh token (includes password hash for invalidation)
                 local refresh_sig = compute_signature(refresh_secret, username .. ":" .. timestamp .. ":" .. password_hash)
                 local refresh_value = username .. ":" .. timestamp .. ":" .. refresh_sig
                 
@@ -162,7 +153,6 @@ http {
             }
         }
 
-        # Refresh endpoint
         location = /proxy-refresh {
             limit_req zone=refresh_limit burst=5 nodelay;
             limit_req_status 429;
@@ -218,7 +208,6 @@ http {
                     return
                 end
                 
-                -- Issue new session
                 local session_secret = read_secret_file("/etc/nginx/secrets/session_secret")
                 local new_timestamp = ngx.now()
                 local session_sig = compute_signature(session_secret, username .. ":" .. new_timestamp)
@@ -231,7 +220,6 @@ http {
             }
         }
 
-        # Session validation (internal)
         location = /proxy-check-session {
             internal;
             content_by_lua_block {
@@ -271,18 +259,77 @@ http {
             }
         }
 
-        # Main proxy location
         location / {
-            auth_request /proxy-check-session;
-            auth_request_set $session_user $upstream_http_x_proxy_user;
-            error_page 401 = @handle_unauthorized;
+            access_by_lua_block {
+                -- Check if Basic Auth header is present
+                if ngx.var.has_basic_auth == "1" then
+                    -- Basic Auth flow: validate by making internal subrequest
+                    -- The subrequest will inherit the Authorization header
+                    local res = ngx.location.capture("/internal-validate-basic-auth", {
+                        method = ngx.HTTP_GET,
+                        copy_all_vars = true
+                    })
+                    
+                    if res.status == ngx.HTTP_OK then
+                        -- Extract username from the response
+                        local cjson = require "cjson"
+                        local ok, data = pcall(cjson.decode, res.body)
+                        if ok and data.username then
+                            ngx.req.set_header("X-Proxy-User", data.username)
+                            ngx.log(ngx.INFO, "Basic Auth successful for user: ", data.username)
+                            return  -- Proceed to proxy
+                        end
+                    end
+                    
+                    -- Basic Auth failed - return 401 without WWW-Authenticate header
+                    -- (appropriate for URL-based auth, no browser dialog)
+                    ngx.log(ngx.WARN, "Basic Auth validation failed")
+                    ngx.status = ngx.HTTP_UNAUTHORIZED
+                    ngx.header["Content-Type"] = "text/plain"
+                    ngx.say("Unauthorized")
+                    return ngx.exit(ngx.HTTP_UNAUTHORIZED)
+                end
+                
+                -- Cookie flow: no Basic Auth header present
+                local cookie = ngx.var.cookie_proxy_session
+                if not cookie or cookie == "" then
+                    ngx.log(ngx.INFO, "No session cookie, redirecting to login: ", ngx.var.request_uri)
+                    return ngx.redirect("/proxy-login?redirect=" .. ngx.escape_uri(ngx.var.request_uri), ngx.HTTP_SEE_OTHER)
+                end
+                
+                -- Validate session cookie
+                local username, timestamp, signature = cookie:match("^([^:]+):([^:]+):([^:]+)$")
+                if not username or not timestamp or not signature then
+                    clear_session_cookie()
+                    ngx.log(ngx.INFO, "Invalid cookie format, redirecting to login")
+                    return ngx.redirect("/proxy-login?redirect=" .. ngx.escape_uri(ngx.var.request_uri), ngx.HTTP_SEE_OTHER)
+                end
+                
+                local secret = read_secret_file("/etc/nginx/secrets/session_secret")
+                local expected_sig = compute_signature(secret, username .. ":" .. timestamp)
+                
+                if not secure_compare(signature, expected_sig) then
+                    ngx.log(ngx.WARN, "Invalid session signature for user: ", username, " - redirecting to login")
+                    clear_session_cookie()
+                    return ngx.redirect("/proxy-login?redirect=" .. ngx.escape_uri(ngx.var.request_uri), ngx.HTTP_SEE_OTHER)
+                end
+                
+                local session_age = ngx.now() - tonumber(timestamp)
+                if session_age > _G.SESSION_MAX_AGE then
+                    ngx.log(ngx.INFO, "Expired session for user: ", username, " - redirecting to login")
+                    clear_session_cookie()
+                    return ngx.redirect("/proxy-login?redirect=" .. ngx.escape_uri(ngx.var.request_uri), ngx.HTTP_SEE_OTHER)
+                end
+                
+                -- Valid session
+                ngx.req.set_header("X-Proxy-User", username)
+            }
 
             proxy_pass $UPSTREAM_HOST;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_set_header X-Proxy-User $session_user;
             proxy_http_version 1.1;
             proxy_set_header Upgrade $http_upgrade;
             proxy_set_header Connection $connection_upgrade;
@@ -291,33 +338,19 @@ http {
             proxy_buffering off;
         }
 
-        # Unauthorized handler
-        location @handle_unauthorized {
-            access_log /var/log/openresty/unauthorized.log unauthorized_log;
-            
-            access_by_lua_block {
-                if ngx.var.has_basic_auth == "1" then
-                    return  -- Proceed to auth_basic
-                end
-                ngx.log(ngx.INFO, "No valid session or Basic Auth, redirecting to login: ", ngx.var.request_uri)
-                return ngx.redirect("/proxy-login?redirect=" .. ngx.escape_uri(ngx.var.request_uri), ngx.HTTP_SEE_OTHER)
-            }
-            
-            auth_basic "Restricted";
+        location = /internal-validate-basic-auth {
+            internal;
+            # This location validates Basic Auth credentials without exposing
+            # the WWW-Authenticate header to the browser (internal subrequest only)
+            auth_basic "Validation";
             auth_basic_user_file /etc/nginx/.htpasswd;
-
-            proxy_pass $UPSTREAM_HOST;
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_set_header X-Forwarded-Proto $scheme;
-            proxy_set_header X-Proxy-User $remote_user;
-            proxy_http_version 1.1;
-            proxy_set_header Upgrade $http_upgrade;
-            proxy_set_header Connection $connection_upgrade;
-            proxy_read_timeout 86400s;
-            proxy_send_timeout 86400s;
-            proxy_buffering off;
+            
+            content_by_lua_block {
+                -- If we reach here, auth_basic succeeded
+                local cjson = require "cjson"
+                ngx.header["Content-Type"] = "application/json"
+                ngx.say(cjson.encode({username = ngx.var.remote_user}))
+            }
         }
     }
 }
