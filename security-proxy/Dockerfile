@@ -1,7 +1,7 @@
-# Use OpenResty (nginx + LuaJIT + resty crypto libs)
-FROM openresty/openresty:alpine
+# Use OpenResty alpine-fat (includes LuaRocks)
+FROM openresty/openresty:alpine-fat
 
-# Install dependencies
+# Install build dependencies for bcrypt and Python
 RUN apk add --no-cache \
     openssl \
     python3 \
@@ -9,13 +9,10 @@ RUN apk add --no-cache \
     gcc \
     musl-dev \
     python3-dev \
-    libffi-dev \
-    make \
-    git \
-    perl
+    libffi-dev
 
-# Install lua-resty-bcrypt
-RUN /usr/local/openresty/bin/opm get jkeys089/lua-resty-bcrypt
+# Install Lua bcrypt
+RUN /usr/local/openresty/luajit/bin/luarocks install bcrypt
 
 # Create Python venv and install Flask + bcrypt
 RUN python3 -m venv /admin-api/venv && \
@@ -23,7 +20,7 @@ RUN python3 -m venv /admin-api/venv && \
     /admin-api/venv/bin/pip install flask bcrypt
 
 # Clean up build dependencies
-RUN apk del gcc musl-dev python3-dev libffi-dev make git
+RUN apk del gcc musl-dev python3-dev libffi-dev
 
 # Copy Nginx configuration
 COPY nginx.conf.template /etc/nginx/nginx.conf.template
