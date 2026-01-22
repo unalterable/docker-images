@@ -24,10 +24,6 @@ RUN python3 -m venv /admin-api/venv && \
 # Clean up build dependencies
 RUN apk del gcc musl-dev python3-dev libffi-dev make git
 
-# Copy Lua auth module
-RUN mkdir -p /etc/nginx/lua
-COPY lua/auth.lua /etc/nginx/lua/auth.lua
-
 # Copy Nginx configuration
 COPY nginx.conf.template /etc/nginx/nginx.conf.template
 
