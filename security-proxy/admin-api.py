@@ -204,7 +204,7 @@ def refresh_session_secret():
         with open(secret_file, 'w') as f:
             f.write(new_secret)
         
-        os.chmod(secret_file, 0o600)
+        os.chmod(secret_file, 0o644)
         
         return jsonify({
             "message": "Session secret refreshed successfully",
