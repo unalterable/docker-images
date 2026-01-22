@@ -1,11 +1,32 @@
 # Use OpenResty (nginx + LuaJIT + resty crypto libs)
 FROM openresty/openresty:alpine
 
-# Install Python, Flask, Apache utils
-RUN apk add --no-cache openssl python3 py3-pip apache2-utils && \
-    python3 -m venv /admin-api/venv && \
+# Install dependencies
+RUN apk add --no-cache \
+    openssl \
+    python3 \
+    py3-pip \
+    gcc \
+    musl-dev \
+    python3-dev \
+    libffi-dev \
+    make \
+    git
+
+# Install lua-resty-bcrypt
+RUN /usr/local/openresty/bin/opm get jkeys089/lua-resty-bcrypt
+
+# Create Python venv and install Flask + bcrypt
+RUN python3 -m venv /admin-api/venv && \
     /admin-api/venv/bin/pip install --upgrade pip && \
-    /admin-api/venv/bin/pip install flask
+    /admin-api/venv/bin/pip install flask bcrypt
+
+# Clean up build dependencies
+RUN apk del gcc musl-dev python3-dev libffi-dev make git
+
+# Copy Lua auth module
+RUN mkdir -p /etc/nginx/lua
+COPY lua/auth.lua /etc/nginx/lua/auth.lua
 
 # Copy Nginx configuration
 COPY nginx.conf.template /etc/nginx/nginx.conf.template
@@ -21,26 +42,24 @@ RUN mkdir -p /etc/nginx/certs && \
       -subj "/C=US/ST=State/L=City/O=Organization/OU=Unit/CN=localhost" \
       -addext "subjectAltName = IP:127.0.0.1"
 
-# Copy htpasswd file
+# Copy htpasswd file (bcrypt hashes)
 COPY .htpasswd /etc/nginx/.htpasswd
 
 # Copy the Flask admin app
 COPY admin-api.py /admin-api/admin.py
 
-# Create directories for Let's Encrypt challenges and OpenResty logs
-RUN mkdir -p /var/www/.well-known/acme-challenge && \
-    mkdir -p /var/log/openresty && \
-    mkdir -p /etc/nginx/secrets
+# Create runtime directories
+RUN mkdir -p /var/www/.well-known/acme-challenge \
+             /var/log/openresty \
+             /etc/nginx/secrets
 
-# Initialize secrets with random values
+# Initialize secrets
 RUN openssl rand -hex 32 > /etc/nginx/secrets/session_secret && \
     openssl rand -hex 32 > /etc/nginx/secrets/refresh_secret && \
     chmod 644 /etc/nginx/secrets/*
 
-# Expose ports
 EXPOSE 443 5000
 
-# Start both OpenResty and Flask API
 CMD sh -c '\
     sed "s|\$UPSTREAM_HOST|${UPSTREAM_HOST}|g" \
     /etc/nginx/nginx.conf.template > /usr/local/openresty/nginx/conf/nginx.conf && \
