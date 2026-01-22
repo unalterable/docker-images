@@ -11,7 +11,8 @@ RUN apk add --no-cache \
     python3-dev \
     libffi-dev \
     make \
-    git
+    git \
+    perl
 
 # Install lua-resty-bcrypt
 RUN /usr/local/openresty/bin/opm get jkeys089/lua-resty-bcrypt
