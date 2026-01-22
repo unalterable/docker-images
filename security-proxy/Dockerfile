@@ -42,10 +42,11 @@ COPY .htpasswd /etc/nginx/.htpasswd
 # Copy the Flask admin app
 COPY admin-api.py /admin-api/admin.py
 
-# Create runtime directories
+# Create runtime directories and log file
 RUN mkdir -p /var/www/.well-known/acme-challenge \
              /var/log/openresty \
-             /etc/nginx/secrets
+             /etc/nginx/secrets && \
+    touch /var/log/openresty/unauthorized.log
 
 # Initialize secrets
 RUN openssl rand -hex 32 > /etc/nginx/secrets/session_secret && \

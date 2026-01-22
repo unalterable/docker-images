@@ -87,8 +87,11 @@ def get_logs():
     if auth_error:
         return auth_error
 
+    log_file = '/var/log/openresty/unauthorized.log'
     try:
-        with open('/var/log/openresty/unauthorized.log', 'r') as f:
+        if not os.path.exists(log_file):
+            return jsonify({"logs": ""})
+        with open(log_file, 'r') as f:
             logs = f.read()
         return jsonify({"logs": logs})
     except Exception as e:
